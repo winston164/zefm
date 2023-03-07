@@ -25,7 +25,7 @@ int hash_nonce(
   unsigned char ** hash_out,
   unsigned long * hash_size_out
 );
-char * read_file(char * filename, unsigned long * out_size);
+unsigned char * read_file(char * filename, unsigned long * out_size);
 unsigned long long get_nonce();
 
 
@@ -40,21 +40,21 @@ int main(int argc, char *argv[])
   // Ensure arguments were provided
   if (argc < 3) {
     fprintf(stderr, "You must provide two document names as arguments\n");
-    goto mainErr;
+    exit(-1);
   }
 
   // Init proofer 
   proofer = init_actor(argv[1], (EVP_MD *)EVP_sha256());
   if(proofer == NULL) {
     perror("Couldn't init proofer");
-    goto mainErr;
+    exit(-1);
   }
 
   // Init verifier
   verifier = init_actor(argv[2], (EVP_MD *)EVP_sha256());
   if(verifier == NULL) {
     perror("Couldn't init verifier");
-    goto mainErr;
+    exit(-1);
   }
 
   // Set seed
@@ -68,7 +68,7 @@ int main(int argc, char *argv[])
     query = generate_query(verifier, get_nonce());
     if (query.hash == NULL) {
       perror("Error while generating query");
-      goto mainErr;
+      exit(-1);
     }
 
     // Decide to send true query or false query
@@ -90,14 +90,19 @@ int main(int argc, char *argv[])
   }
 
 
-mainErr:
   if (proofer != NULL) EVP_MD_CTX_free(proofer);
   if (verifier != NULL) EVP_MD_CTX_free(verifier);
   return 0;
 }
 
+EVP_MD_CTX * init_actor_err(unsigned char * message, EVP_MD_CTX * ctx) {
+  if (message != NULL) free(message);
+  if (ctx != NULL) EVP_MD_CTX_free(ctx);
+  return NULL;
+}
+
 EVP_MD_CTX * init_actor(char * filename, EVP_MD * algorithm) {
-  char * message = NULL;
+  unsigned char * message = NULL;
   unsigned long message_size = 0;
 
   EVP_MD_CTX * ctx = NULL;
@@ -106,36 +111,33 @@ EVP_MD_CTX * init_actor(char * filename, EVP_MD * algorithm) {
   message = read_file(filename, &message_size);
   if (message == NULL) {
     perror("Couldn't place file into message buffer");
-    goto initActorErr;
+    return init_actor_err(message, ctx);
   }
 
   // Initialize Message Digest Context
   ctx = EVP_MD_CTX_new();
   if (ctx == NULL) {
     perror("Couldn't initialize context");
-    goto initActorErr;
+    return init_actor_err(message, ctx);
   }
 
   // Initialize Message Digest Context
   if(!EVP_DigestInit_ex(ctx, algorithm, NULL)) {
     perror("Couldn't initialize context");
-    goto initActorErr;
+    return init_actor_err(message, ctx);
   }
 
   // Update with message buffer
   if(!EVP_DigestUpdate(ctx, message, message_size)) {
     perror("Couldn't update context with file buffer");
-    goto initActorErr;
+    return init_actor_err(message, ctx);
   }
 
   free(message);
   return ctx;
-
-initActorErr: 
-  if (message != NULL) free(message);
-  if (ctx != NULL) EVP_MD_CTX_free(ctx);
-  return NULL;
 }
+
+
 
 ZefmQuery generate_query(EVP_MD_CTX * verifier, unsigned long long nonce){
   ZefmQuery result;
@@ -176,6 +178,11 @@ unsigned char solve_query(EVP_MD_CTX * proofer, ZefmQuery query) {
   return res; // TODO: better return type in case of error
 }
 
+int hash_nonce_err(EVP_MD_CTX * ctx_copy, unsigned char * outdigest){
+  if (ctx_copy != NULL) EVP_MD_CTX_free(ctx_copy);
+  if (outdigest != NULL) OPENSSL_free(outdigest);
+  return 1;
+}
 int hash_nonce(
   EVP_MD_CTX * ctx,
   unsigned long long nonce,
@@ -191,37 +198,37 @@ int hash_nonce(
   ctx_copy = EVP_MD_CTX_new();
   if (ctx_copy == NULL) {
     perror("Couldn't initialize digest context copy");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   if(!EVP_MD_CTX_copy(ctx_copy, ctx)) {
     perror("Couldn't copy participant digest context");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   // Update copy digest context with hash
   if(!EVP_DigestUpdate(ctx_copy, &nonce, sizeof(unsigned long long))){
     perror("Couldn't update digest context with nonce");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   // Allocate output buffer
   outdigest = OPENSSL_malloc(EVP_MAX_MD_SIZE);
   if(outdigest == NULL){
     perror("Couldn't allocate memory for digest output buffer");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   // Calculate digest
   if(!EVP_DigestFinal_ex(ctx_copy, outdigest, &len)) {
     perror("Couldn't calculate digest for context copy");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   *res = (unsigned char*)malloc(len);
   if (*res == NULL) {
     perror("couldn't allocate enough memory for result");
-    goto hashNonceErr;
+    return hash_nonce_err(ctx_copy, outdigest);
   }
 
   memcpy(*res, outdigest, len);
@@ -231,20 +238,22 @@ int hash_nonce(
   OPENSSL_free(outdigest);
 
   return 0;
-
-hashNonceErr:
-  if (ctx != NULL) EVP_MD_CTX_free(ctx_copy);
-  if (outdigest != NULL) OPENSSL_free(outdigest);
-  return 1;
 }
 
-char * read_file(char *fn, unsigned long * out_size) {
+unsigned char * read_file_err(FILE * file, unsigned char * buffer) {
+  if (file != NULL) fclose(file);
+  if (buffer != NULL) free(buffer);
+  return NULL;
+}
+
+unsigned char * read_file(char *fn, unsigned long * out_size) {
   // Open the file for reading
   FILE* file = NULL;
   file = fopen(fn, "rb");
+  unsigned char* buffer = NULL;
   if (file == NULL) {
     perror("Failed to open file");
-    goto readFileErr;
+    return read_file_err(file, buffer);
   }
 
   // Determine the size of the file
@@ -253,11 +262,10 @@ char * read_file(char *fn, unsigned long * out_size) {
   fseek(file, 0, SEEK_SET);
 
   // Allocate a buffer to hold the file contents
-  char* buffer = NULL;
   buffer = malloc(size);
   if (buffer == NULL) {
     perror("Failed to allocate memory for file buffer");
-    goto readFileErr;
+    return read_file_err(file, buffer);
   }
 
   // Read the file into the buffer
@@ -268,11 +276,6 @@ char * read_file(char *fn, unsigned long * out_size) {
 
   *out_size = size;
   return buffer;
-
-readFileErr:
-  if (file != NULL) fclose(file);
-  if (buffer != NULL) free(buffer);
-  return NULL;
 }
 
 unsigned long long get_nonce() {
